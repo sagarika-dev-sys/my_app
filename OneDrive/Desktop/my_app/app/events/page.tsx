@@ -27,21 +27,30 @@ export default async function EventsPage({ searchParams }: PageProps) {
 
   const supabase = createClient(supabaseUrl, supabaseKey, { auth: { persistSession: false } });
 
-  // Fetch live events from table matching database columns
+  // Fetch live events joining profiles to fetch the real club name
   const { data: databaseEvents } = await supabase
     .from("events")
-    .select("*")
+    .select(`
+      id,
+      title,
+      description,
+      venue,
+      date,
+      time_start,
+      club_id,
+      profiles:club_id ( full_name )
+    `)
     .order("date", { ascending: true });
 
   const localFallbackEvents = [
     {
       id: "evt-101",
       title: "HackFest 2026 Briefing Session",
-      club: "Computer Science Society",
       date: "2026-06-28",
-      time: "04:30 PM",
+      time_start: "16:30:00",
       venue: "Main Audi Hall 2",
       description: "Mandatory structural orientation and team sync-up rules for all registered internal campus hackathon participants.",
+      profiles: { full_name: "Computer Science Society" }
     }
   ];
 
@@ -74,7 +83,8 @@ export default async function EventsPage({ searchParams }: PageProps) {
                 <div className="flex justify-between items-start gap-4">
                   <div>
                     <span className="text-xs font-semibold text-indigo-600 bg-indigo-50 border border-indigo-100 px-2 py-0.5 rounded-md">
-                      {event.club}
+                      {/* Access Joined User/Club profile structure */}
+                      {event.profiles && !Array.isArray(event.profiles) ? event.profiles.full_name : "Campus Club"}
                     </span>
                     <h3 className="text-base font-bold text-gray-900 mt-2">{event.title}</h3>
                     <p className="text-sm text-gray-600 mt-1.5 leading-relaxed">{event.description}</p>
@@ -82,7 +92,8 @@ export default async function EventsPage({ searchParams }: PageProps) {
                 </div>
                 <div className="flex flex-wrap items-center gap-x-4 mt-4 pt-3 border-t border-gray-50 text-xs text-gray-500 font-medium">
                   <div>📅 {event.date}</div>
-                  <div>⏰ {event.time}</div>
+                  {/* Fixed column data parameter from event.time to event.time_start */}
+                  <div>⏰ {event.time_start}</div> 
                   <div>📍 {event.venue}</div>
                 </div>
               </div>
