@@ -6,21 +6,36 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
 
-const INITIAL_POSTS = [
-  { id: 1, author: "Google Developer Student Club (GDSC)", role: "Club Admin", content: "🚀 Get ready for the upcoming 24-Hour Hackfest! Registrations open tonight at 8 PM. Prepare your teams and ideas. Great prizes await!", tag: "Event", upvotes: 42, timestamp: "2 hours ago" },
-  { id: 2, author: "Cultural Committee", role: "Club Admin", content: "Auditions for the dynamic campus rock band 'The Echoes' start this Friday at the main auditorium. Bring your own instruments!", tag: "Notice", upvotes: 19, timestamp: "5 hours ago" }
+// DATABASE INITIAL SEEDS SYNC
+const SEED_POSTS = [
+  { id: "018b31c2-cbb3-789a-bf71-ef671239ab01", author: "Aarav Sharma", role: "Student", content: "Cracked the summer internship interview process! Super excited for what is next! #placement #coding", upvotes: 42, timestamp: "2 hours ago" },
+  { id: "018b31c2-cbb3-789a-bf71-ef671239ab02", author: "Ananya Verma", role: "Student", content: "Does anyone know if the central library stays open past 8 PM during end-sem exams? #help", upvotes: 19, timestamp: "5 hours ago" }
 ];
 
 export default function CampusFeed() {
-  const [posts, setPosts] = useState(INITIAL_POSTS);
-  const [newPost, setNewPost] = useState('');
-  const [selectedTag, setSelectedTag] = useState('General');
+  const [posts, setPosts] = useState(SEED_POSTS);
+  const [content, setContent] = useState('');
 
   const handleCreatePost = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newPost.trim()) return;
-    setPosts([{ id: posts.length + 1, author: "Anonymous Student", role: "Student", content: newPost, tag: selectedTag, upvotes: 0, timestamp: "Just now" }, ...posts]);
-    setNewPost('');
+    if (!content.trim()) return;
+
+    // TARGET DATA INTERCEPT ENGINE
+    const postPayload = { content: content };
+    console.log("Packaging post vector for database injection:", postPayload);
+
+    setPosts([
+      { 
+        id: crypto.randomUUID(), 
+        author: "Current User", 
+        role: "Student", 
+        content: content, 
+        upvotes: 0, 
+        timestamp: "Just now" 
+      }, 
+      ...posts
+    ]);
+    setContent('');
   };
 
   return (
@@ -38,14 +53,17 @@ export default function CampusFeed() {
           <CardHeader className="pb-3"><CardTitle className="text-lg font-bold text-slate-800">Broadcast an Update</CardTitle></CardHeader>
           <CardContent>
             <form onSubmit={handleCreatePost} className="space-y-4">
-              <Textarea placeholder="What's buzzing on campus today?..." value={newPost} onChange={(e) => setNewPost(e.target.value)} className="bg-white/80 border-slate-200 text-slate-900 rounded-xl min-h-[90px]" required />
-              <div className="flex justify-between items-center gap-3 flex-wrap">
-                <div className="flex gap-2">
-                  {['General', 'Event', 'Notice', 'Lost & Found'].map((tag) => (
-                    <button key={tag} type="button" onClick={() => setSelectedTag(tag)} className={`text-xs font-semibold px-3 py-1.5 rounded-full border transition-all cursor-pointer ${selectedTag === tag ? 'bg-slate-900 text-white border-slate-900' : 'bg-white/60 text-slate-600 border-slate-200 hover:bg-white'}`}>{tag}</button>
-                  ))}
-                </div>
-                <Button type="submit" className="bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs px-4 py-2.5 rounded-xl cursor-pointer">Publish Post</Button>
+              <Textarea 
+                placeholder="What's buzzing on campus today? (Include #tags)..." 
+                value={content} 
+                onChange={(e) => setContent(e.target.value)} 
+                className="bg-white/80 border-slate-200 text-slate-900 rounded-xl min-h-[90px]" 
+                required 
+              />
+              <div className="flex justify-end">
+                <Button type="submit" className="bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs px-5 py-2.5 rounded-xl cursor-pointer">
+                  Publish Post
+                </Button>
               </div>
             </form>
           </CardContent>
@@ -59,11 +77,19 @@ export default function CampusFeed() {
                   <CardTitle className="text-sm font-bold text-slate-900">{post.author}</CardTitle>
                   <span className="text-[11px] font-medium text-slate-400">{post.role} • {post.timestamp}</span>
                 </div>
-                <Badge variant="outline" className="text-[10px] font-bold px-2 py-0.5 border-slate-200 text-slate-700 bg-white/40">{post.tag}</Badge>
               </CardHeader>
-              <CardContent className="px-5 pb-4"><p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">{post.content}</p></CardContent>
+              <CardContent className="px-5 pb-4">
+                <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-wrap">{post.content}</p>
+              </CardContent>
               <CardFooter className="border-t border-slate-100 p-3 px-5 flex justify-between items-center text-xs bg-slate-50/30 rounded-b-2xl">
-                <Button variant="ghost" size="sm" onClick={() => setPosts(posts.map(p => p.id === post.id ? { ...p, upvotes: p.upvotes + 1 } : p))} className="text-slate-600 hover:text-slate-900 font-bold text-xs rounded-lg cursor-pointer">▲ Upvote ({post.upvotes})</Button>
+                <Button 
+                  variant="ghost" 
+                  size="sm" 
+                  onClick={() => setPosts(posts.map(p => p.id === post.id ? { ...p, upvotes: p.upvotes + 1 } : p))} 
+                  className="text-slate-600 hover:text-slate-900 font-bold text-xs rounded-lg cursor-pointer"
+                >
+                  ▲ Upvote ({post.upvotes})
+                </Button>
               </CardFooter>
             </Card>
           ))}
