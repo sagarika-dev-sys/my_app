@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException, Depends
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -11,6 +12,16 @@ from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 app = FastAPI(title="Campus Connect API")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[""
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    ],
+    allow_credentials=True, 
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ----------------------------
 # In-Memory Database
