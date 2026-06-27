@@ -1,16 +1,27 @@
 from fastapi import FastAPI, HTTPException, Depends
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel, EmailStr, Field, field_validator
 from typing import Annotated, Literal
 from datetime import datetime, timedelta
-from app.database import get_db
+from database import get_db
 from uuid import UUID
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
 app = FastAPI(title="Campus Connect API")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[""
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    ],
+    allow_credentials=True, 
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # ----------------------------
 # In-Memory Database
@@ -65,8 +76,13 @@ def create_access_token(data: dict):
 
 class Feed(BaseModel):
     student_id: UUID
+    title: str | None = None
+    description: str | None = None
     content: str
     media_url: str | None = None
+    image_url: str | None = None
+    hashtag_id: UUID | None = None
+    expires_at: datetime | None = None
 
 class Event(BaseModel):
     club_id: UUID
@@ -75,11 +91,11 @@ class Event(BaseModel):
     venue: str
     start_time: datetime
     end_time: datetime
-    capacity: int
+    capacity: int = Field(gt=0)
 
 class Complaint(BaseModel):
     student_id: UUID | None = None
-    category: str
+    category: Literal["academic","hostel","mess","technical","other"]
     subject: str
     description: str
     is_anonymous: bool = False
@@ -90,10 +106,14 @@ class Group(BaseModel):
 
 class StudentRegister(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(
+        min_length = 8, max_length = 50
+    )
     full_name: str
 
-    roll_number: str
+    roll_number: str= Field(
+        min_length = 8, max_length = 50
+    )
     enrollment_number: str
     branch: str
     graduation_year: int
@@ -102,7 +122,7 @@ class StudentRegister(BaseModel):
     @classmethod
     def validate_email(cls, value):
 
-        if not value.lower().endswith("nitrr.ac.in"):
+        if not value.lower().endswith("@nitrr.ac.in"):
             raise ValueError("Invalid institute email")
 
         return value
@@ -113,11 +133,36 @@ class Login(BaseModel):
     password: str
     
 
+# CHAT MESSAGE
+class ChatMessage(BaseModel):
+    room_id: UUID
+    sender_id: UUID
+    content: str
+    image_url: str | None = None
+
+
 # Register API
 @app.post("/register")
 def register(user: StudentRegister, db: Session = Depends(get_db)):
 
     try:
+        # Check if email already exists
+        check_query = """
+        SELECT id
+        FROM public.profiles
+        WHERE email = :email;
+        """
+
+        existing = db.execute(
+            text(check_query),
+            {"email": user.email.lower()}
+        ).fetchone()
+
+        if existing:
+            raise HTTPException(
+                status_code=409,
+                detail="Email already exists"
+            )
         # 1. create profile
         profile_query = """
         INSERT INTO public.profiles
@@ -155,9 +200,16 @@ def register(user: StudentRegister, db: Session = Depends(get_db)):
 
         return {"message": "Student registered successfully"}
 
+    except HTTPException:
+        db.rollback()
+        raise
+    
     except Exception as e:
         db.rollback()
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
 
 
 
@@ -214,15 +266,14 @@ def home():
 def create_feed(feed: Feed, db: Session = Depends(get_db)):
 
     query = """
-    INSERT INTO public.posts (student_id, content, media_url)
-    VALUES (:student_id, :content, :media_url)
+    INSERT INTO public.posts (student_id, title, description, content,media_url, image_url, hashtag_id, expires_at)
+    VALUES (:student_id, :title, :description, :content,:media_url, :image_url, :hashtag_id, :expires_at)
     RETURNING id, created_at;
     """
 
     result = db.execute(text(query), feed.model_dump())
-    db.commit()
-
     post = result.fetchone()
+    db.commit()
 
     return {
         "message": "Feed created successfully",
@@ -234,9 +285,13 @@ def create_feed(feed: Feed, db: Session = Depends(get_db)):
 def get_feeds(db: Session = Depends(get_db)):
 
     query = """
-    SELECT p.*, s.roll_number
+    SELECT
+    p.*,s.roll_number, h.name AS hashtag_name, h.display_name 
     FROM public.posts p
-    JOIN public.students s ON p.student_id = s.id
+    JOIN public.students s
+    ON p.student_id=s.id
+    JOIN public.hashtags h
+    ON p.hashtag_id=h.id
     ORDER BY p.created_at DESC
     """
 
@@ -248,8 +303,14 @@ def get_feeds(db: Session = Depends(get_db)):
 def get_feed(post_id: UUID, db: Session = Depends(get_db)):
 
     query = """
-    SELECT * FROM public.posts
-    WHERE id = :post_id
+    SELECT
+    p.*,
+    h.name AS hashtag_name,
+    h.display_name
+    FROM public.posts p
+    JOIN public.hashtags h
+    ON p.hashtag_id = h.id
+    WHERE p.id = :post_id;
     """
 
     result = db.execute(text(query), {"post_id": post_id}).fetchone()
@@ -259,6 +320,51 @@ def get_feed(post_id: UUID, db: Session = Depends(get_db)):
 
     return dict(result._mapping)
 
+
+# Live Chat message
+@app.post("/chat/messages")
+def send_message(message: ChatMessage, db: Session = Depends(get_db)):
+
+    query = """
+    INSERT INTO public.chat_messages
+    (room_id, sender_id, content, image_url)
+    VALUES
+    (:room_id, :sender_id, :content, :image_url)
+    RETURNING id, created_at;
+    """
+
+    result = db.execute(text(query), message.model_dump())
+    row = result.fetchone()
+    db.commit()
+
+    return {
+        "message": "Message sent",
+        "message_id": str(row.id),
+        "created_at": row.created_at
+    }
+
+@app.get("/chat/{room_id}/messages")
+def get_messages(room_id: UUID, db: Session = Depends(get_db)):
+
+    query = """
+    SELECT
+        m.*,
+        p.full_name
+    FROM public.chat_messages m
+    JOIN public.profiles p
+        ON m.sender_id = p.id
+    WHERE m.room_id = :room_id
+    ORDER BY m.created_at ASC;
+    """
+
+    result = db.execute(text(query), {
+        "room_id": room_id
+    }).fetchall()
+
+    return [
+        dict(row._mapping)
+        for row in result
+    ]
 
 # ----------------------------
 # Event APIs
@@ -276,9 +382,8 @@ def create_event(event: Event, db: Session = Depends(get_db)):
     """
 
     result = db.execute(text(query), event.model_dump())
-    db.commit()
-
     event_id = result.fetchone()[0]
+    db.commit()
 
     return {
         "message": "Event created successfully",
@@ -325,6 +430,33 @@ def delete_event(event_id: UUID, db: Session = Depends(get_db)):
 
     return {"message": "Event deleted successfully"}
 
+
+# hashtag
+@app.get("/hashtags")
+def get_hashtags(db: Session = Depends(get_db)):
+
+    query = """
+    SELECT
+        id,
+        name,
+        display_name,
+        expiry_enabled,
+        default_expiry_minutes,
+        min_expiry_minutes,
+        max_expiry_minutes,
+        contact_display
+    FROM public.hashtags
+    WHERE is_active = TRUE
+    ORDER BY display_name;
+    """
+
+    result = db.execute(text(query)).fetchall()
+
+    return [
+        dict(row._mapping)
+        for row in result
+    ]
+
 # ----------------------------
 # Complaint APIs
 # ----------------------------
@@ -341,9 +473,8 @@ def create_complaint(complaint: Complaint, db: Session = Depends(get_db)):
     """
 
     result = db.execute(text(query), complaint.model_dump())
-    db.commit()
-
     row = result.fetchone()
+    db.commit()
 
     return {
         "message": "Complaint submitted successfully",
@@ -411,9 +542,8 @@ def create_group(group: Group, db: Session = Depends(get_db)):
     """
 
     result = db.execute(text(query), group.model_dump())
-    db.commit()
-
     row = result.fetchone()
+    db.commit()
 
     return {
         "message": "Group created successfully",
@@ -435,6 +565,24 @@ def get_groups(db: Session = Depends(get_db)):
 
 @app.post("/groups/{group_id}/join")
 def join_group(group_id: UUID, user_id: UUID, db: Session = Depends(get_db)):
+
+    # Check whether group exists
+    check_query = """
+    SELECT id
+    FROM public.chat_rooms
+    WHERE id = :group_id;
+    """
+
+    group = db.execute(
+        text(check_query),
+        {"group_id": group_id}
+    ).fetchone()
+
+    if not group:
+        raise HTTPException(
+            status_code=404,
+            detail="Group not found"
+        )
 
     query = """
     INSERT INTO public.chat_room_members (room_id, user_id)
@@ -474,7 +622,7 @@ def dashboard(db: Session = Depends(get_db)):
 
     events_count = db.execute(text("SELECT COUNT(*) FROM public.events")).scalar()
 
-    feeds_count = db.execute(text("SELECT COUNT(*) FROM public.posts")).scalar()
+    feeds_count = db.execute(text("SELECT COUNT(*) FROM public.posts WHERE is_active = TRUE")).scalar()
     complaints_count = db.execute(text("SELECT COUNT(*) FROM public.complaints")).scalar()
     groups_count = db.execute(text("SELECT COUNT(*) FROM public.chat_rooms")).scalar()
 
