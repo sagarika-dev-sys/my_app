@@ -795,3 +795,356 @@ COMMIT;
 
 -- Final output state definition string trigger
 SELECT 'Campus Buzz – NIT Raipur PostgreSQL Database Generation Completed Successfully.' AS status_report;
+
+-- ==========================================
+-- UPGRADE SCRIPT: CAMPUS BUZZ HASHTAG & CHAT ARCHITECTURE
+-- ==========================================
+
+BEGIN;
+
+-- ------------------------------------------
+-- 1. CLEANUP OF LEGACY AUTOMATION
+-- ------------------------------------------
+
+-- Remove global automated chat channel subscriptions[cite: 60, 62].
+DROP TRIGGER IF EXISTS secure_auto_join_channels ON public.profiles;
+DROP FUNCTION IF EXISTS public.auto_subscribe_user_to_campus_channels();
+
+-- Remove legacy global chat room initialization[cite: 52, 63].
+DROP FUNCTION IF EXISTS public.initialize_automated_campus_channels();
+
+-- Remove legacy regex hashtag parsing pipeline[cite: 74, 78].
+DROP TRIGGER IF EXISTS process_post_content_hashtags ON public.posts;
+DROP FUNCTION IF EXISTS public.process_post_hashtags_stream();
+
+-- Destroy existing global automated rooms (e.g., #foodsplit global)[cite: 54, 56, 58].
+DELETE FROM public.chat_rooms WHERE type = 'automated';
+
+
+-- ------------------------------------------
+-- 2. HASHTAG SYSTEM RECONSTRUCTION
+-- ------------------------------------------
+
+-- Drop the old junction table since the relationship is now 1:1[cite: 13].
+DROP TABLE IF EXISTS public.post_hashtags CASCADE;
+
+-- Modify existing hashtags table structure[cite: 12].
+ALTER TABLE public.hashtags DROP CONSTRAINT IF EXISTS check_tag_format;
+ALTER TABLE public.hashtags RENAME COLUMN tag TO name;
+
+ALTER TABLE public.hashtags 
+    ADD COLUMN display_name VARCHAR(100),
+    ADD COLUMN auto_create_chat BOOLEAN DEFAULT FALSE,
+    ADD COLUMN expiry_enabled BOOLEAN DEFAULT FALSE,
+    ADD COLUMN default_expiry_minutes INT,
+    ADD COLUMN min_expiry_minutes INT,
+    ADD COLUMN max_expiry_minutes INT,
+    ADD COLUMN contact_display BOOLEAN DEFAULT FALSE,
+    ADD COLUMN is_active BOOLEAN DEFAULT TRUE,
+    ADD COLUMN updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
+
+-- Wipe existing free-form tags to enforce strictly controlled tags.
+DELETE FROM public.hashtags;
+
+-- Seed the 5 absolute system hashtags.
+INSERT INTO public.hashtags (
+    id, name, display_name, auto_create_chat, expiry_enabled, 
+    default_expiry_minutes, min_expiry_minutes, max_expiry_minutes, contact_display
+) VALUES 
+(gen_random_uuid(), 'foodsplit', 'Food Split', true, true, 1440, 10, 2880, false),
+(gen_random_uuid(), 'cabsplit', 'Cab Split', true, true, 1440, 10, 2880, false),
+(gen_random_uuid(), 'resell', 'Resell', true, false, NULL, NULL, NULL, false),
+(gen_random_uuid(), 'lost', 'Lost', false, false, NULL, NULL, NULL, true),
+(gen_random_uuid(), 'found', 'Found', false, false, NULL, NULL, NULL, true);
+
+
+-- ------------------------------------------
+-- 3. POSTS TABLE ENHANCEMENTS
+-- ------------------------------------------
+
+-- Add necessary attributes for the new structure[cite: 11].
+ALTER TABLE public.posts 
+    ADD COLUMN title VARCHAR(255),
+    ADD COLUMN description TEXT,
+    ADD COLUMN image_url TEXT,
+    ADD COLUMN hashtag_id UUID REFERENCES public.hashtags(id) ON DELETE RESTRICT,
+    ADD COLUMN expires_at TIMESTAMP WITH TIME ZONE,
+    ADD COLUMN is_active BOOLEAN DEFAULT TRUE,
+    ADD COLUMN deleted_at TIMESTAMP WITH TIME ZONE;
+
+-- Safely migrate existing posts to a default system tag to allow NOT NULL constraint.
+UPDATE public.posts 
+SET hashtag_id = (SELECT id FROM public.hashtags WHERE name = 'resell') 
+WHERE hashtag_id IS NULL;
+
+-- Lock down the schema to enforce exact 1:1 hashtag association.
+ALTER TABLE public.posts ALTER COLUMN hashtag_id SET NOT NULL;
+
+
+-- ------------------------------------------
+-- 4. CHAT ROOMS & MESSAGES UPGRADE
+-- ------------------------------------------
+
+-- Attach chat rooms strictly to specific posts[cite: 16].
+ALTER TABLE public.chat_rooms 
+    ADD COLUMN post_id UUID UNIQUE REFERENCES public.posts(id) ON DELETE CASCADE,
+    ADD COLUMN created_by UUID REFERENCES public.profiles(id) ON DELETE CASCADE,
+    ADD COLUMN status VARCHAR(20) DEFAULT 'open',
+    ADD COLUMN updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
+
+-- Optional image functionality for messages[cite: 18].
+ALTER TABLE public.chat_messages 
+    ADD COLUMN image_url TEXT;
+
+
+-- ------------------------------------------
+-- 5. TRIGGERS & VALIDATION CONSTRAINTS
+-- ------------------------------------------
+
+-- Validates expiry windows and enforces hashtag behaviors before saving a post.
+CREATE OR REPLACE FUNCTION public.validate_post_configuration()
+RETURNS TRIGGER AS $$
+DECLARE
+    tag_config RECORD;
+    requested_expiry_mins INT;
+BEGIN
+    SELECT * INTO tag_config FROM public.hashtags WHERE id = NEW.hashtag_id;
+    
+    IF tag_config.expiry_enabled THEN
+        IF NEW.expires_at IS NULL THEN
+            NEW.expires_at := CURRENT_TIMESTAMP + (tag_config.default_expiry_minutes || ' minutes')::INTERVAL;
+        END IF;
+        
+        requested_expiry_mins := EXTRACT(EPOCH FROM (NEW.expires_at - CURRENT_TIMESTAMP)) / 60;
+        
+        IF requested_expiry_mins < tag_config.min_expiry_minutes OR requested_expiry_mins > tag_config.max_expiry_minutes THEN
+            RAISE EXCEPTION 'Expiry for % must be strictly between % and % minutes', tag_config.name, tag_config.min_expiry_minutes, tag_config.max_expiry_minutes;
+        END IF;
+    ELSE
+        -- Force NULL for Resell, Lost, Found
+        NEW.expires_at := NULL;
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER enforce_post_configurations
+    BEFORE INSERT OR UPDATE ON public.posts
+    FOR EACH ROW EXECUTE FUNCTION public.validate_post_configuration();
+
+-- Intercepts post creation and automatically spins up dedicated chat rooms based on the tag rules.
+CREATE OR REPLACE FUNCTION public.trigger_create_chat_room_for_post()
+RETURNS TRIGGER AS $$
+DECLARE
+    tag_config RECORD;
+BEGIN
+    SELECT * INTO tag_config FROM public.hashtags WHERE id = NEW.hashtag_id;
+    
+    IF tag_config.auto_create_chat THEN
+        INSERT INTO public.chat_rooms (title, type, post_id, created_by, status)
+        VALUES (COALESCE(NEW.title, 'Discussion Room'), 'group', NEW.id, NEW.student_id, 'open');
+    END IF;
+    
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER after_post_insert_chat_creation
+    AFTER INSERT ON public.posts
+    FOR EACH ROW EXECUTE FUNCTION public.trigger_create_chat_room_for_post();
+
+
+-- ------------------------------------------
+-- 6. CORE FUNCTIONS (API WRAPPERS)
+-- ------------------------------------------
+
+CREATE OR REPLACE FUNCTION public.join_chat_room(target_room_id UUID, target_user_id UUID)
+RETURNS VOID AS $$
+BEGIN
+    INSERT INTO public.chat_room_members(room_id, user_id)
+    VALUES (target_room_id, target_user_id)
+    ON CONFLICT DO NOTHING;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION public.leave_chat_room(target_room_id UUID, target_user_id UUID)
+RETURNS VOID AS $$
+BEGIN
+    DELETE FROM public.chat_room_members WHERE room_id = target_room_id AND user_id = target_user_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION public.is_chat_member(target_room_id UUID, target_user_id UUID)
+RETURNS BOOLEAN AS $$
+BEGIN
+    RETURN EXISTS (SELECT 1 FROM public.chat_room_members WHERE room_id = target_room_id AND user_id = target_user_id);
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+CREATE OR REPLACE FUNCTION public.close_chat_room(target_room_id UUID)
+RETURNS VOID AS $$
+BEGIN
+    UPDATE public.chat_rooms SET status = 'closed', updated_at = CURRENT_TIMESTAMP WHERE id = target_room_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION public.reopen_chat_room(target_room_id UUID)
+RETURNS VOID AS $$
+BEGIN
+    UPDATE public.chat_rooms SET status = 'open', updated_at = CURRENT_TIMESTAMP WHERE id = target_room_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+CREATE OR REPLACE FUNCTION public.get_post_hashtag(target_post_id UUID)
+RETURNS VARCHAR AS $$
+DECLARE
+    found_tag VARCHAR;
+BEGIN
+    SELECT h.name INTO found_tag FROM public.hashtags h 
+    JOIN public.posts p ON h.id = p.hashtag_id 
+    WHERE p.id = target_post_id;
+    RETURN found_tag;
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+CREATE OR REPLACE FUNCTION public.expire_post(target_post_id UUID)
+RETURNS VOID AS $$
+BEGIN
+    UPDATE public.posts SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP WHERE id = target_post_id;
+    UPDATE public.chat_rooms SET status = 'closed', updated_at = CURRENT_TIMESTAMP WHERE post_id = target_post_id;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+
+-- ------------------------------------------
+-- 7. PG_CRON EXPIRY AUTOMATION
+-- ------------------------------------------
+
+CREATE OR REPLACE FUNCTION public.process_automatic_post_expiries()
+RETURNS VOID AS $$
+BEGIN
+    -- Only affects posts where expiry_enabled is true (via internal validation state)
+    UPDATE public.posts 
+    SET is_active = FALSE, updated_at = CURRENT_TIMESTAMP
+    WHERE expires_at IS NOT NULL AND expires_at <= CURRENT_TIMESTAMP AND is_active = TRUE;
+
+    -- Close associated chat rooms for expired posts
+    UPDATE public.chat_rooms cr
+    SET status = 'closed', updated_at = CURRENT_TIMESTAMP
+    FROM public.posts p
+    WHERE cr.post_id = p.id AND p.is_active = FALSE AND cr.status = 'open';
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Schedule the cleanup job to run every 15 minutes[cite: 66].
+SELECT cron.schedule('process_post_expiries', '*/15 * * * *', 'SELECT public.process_automatic_post_expiries();');
+
+
+-- ------------------------------------------
+-- 8. INDEXES & PERFORMANCE
+-- ------------------------------------------
+
+CREATE INDEX IF NOT EXISTS idx_posts_hashtag_id ON public.posts(hashtag_id);
+CREATE INDEX IF NOT EXISTS idx_posts_expires_at ON public.posts(expires_at) WHERE expires_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_posts_is_active ON public.posts(is_active);
+CREATE INDEX IF NOT EXISTS idx_posts_created_at ON public.posts(created_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_hashtags_name ON public.hashtags(name);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_rooms_post_id ON public.chat_rooms(post_id);
+
+-- Composite optimizations
+CREATE INDEX IF NOT EXISTS idx_posts_hashtag_active ON public.posts(hashtag_id, is_active);
+CREATE INDEX IF NOT EXISTS idx_chat_messages_room_time ON public.chat_messages(room_id, created_at DESC);
+
+-- GIN Full Text Search [cite: 31]
+CREATE INDEX IF NOT EXISTS idx_posts_search_trgm ON public.posts USING gin ((COALESCE(title, '') || ' ' || COALESCE(description, '') || ' ' || content) gin_trgm_ops);
+
+
+-- ------------------------------------------
+-- 9. SPECIALIZED VIEWS
+-- ------------------------------------------
+
+CREATE OR REPLACE VIEW public.active_foodsplit_posts AS
+SELECT p.* FROM public.posts p
+JOIN public.hashtags h ON p.hashtag_id = h.id
+WHERE h.name = 'foodsplit' AND p.is_active = TRUE;
+
+CREATE OR REPLACE VIEW public.active_cabsplit_posts AS
+SELECT p.* FROM public.posts p
+JOIN public.hashtags h ON p.hashtag_id = h.id
+WHERE h.name = 'cabsplit' AND p.is_active = TRUE;
+
+CREATE OR REPLACE VIEW public.active_resell_posts AS
+SELECT p.* FROM public.posts p
+JOIN public.hashtags h ON p.hashtag_id = h.id
+WHERE h.name = 'resell' AND p.is_active = TRUE;
+
+CREATE OR REPLACE VIEW public.lost_posts AS
+SELECT p.* FROM public.posts p
+JOIN public.hashtags h ON p.hashtag_id = h.id
+WHERE h.name = 'lost' AND p.is_active = TRUE;
+
+CREATE OR REPLACE VIEW public.found_posts AS
+SELECT p.* FROM public.posts p
+JOIN public.hashtags h ON p.hashtag_id = h.id
+WHERE h.name = 'found' AND p.is_active = TRUE;
+
+CREATE OR REPLACE VIEW public.expired_posts AS
+SELECT * FROM public.posts WHERE is_active = FALSE OR (expires_at IS NOT NULL AND expires_at <= CURRENT_TIMESTAMP);
+
+CREATE OR REPLACE VIEW public.active_chat_rooms AS
+SELECT cr.* FROM public.chat_rooms cr
+JOIN public.posts p ON cr.post_id = p.id
+WHERE cr.status = 'open' AND p.is_active = TRUE;
+
+CREATE OR REPLACE VIEW public.popular_foodsplit_posts AS
+SELECT p.id, p.title, COUNT(crm.user_id) AS total_participants
+FROM public.posts p
+JOIN public.hashtags h ON p.hashtag_id = h.id
+JOIN public.chat_rooms cr ON p.id = cr.post_id
+LEFT JOIN public.chat_room_members crm ON cr.id = crm.room_id
+WHERE h.name = 'foodsplit' AND p.is_active = TRUE
+GROUP BY p.id, p.title
+ORDER BY total_participants DESC;
+
+
+-- ------------------------------------------
+-- 10. ROW LEVEL SECURITY (RLS) OVERRIDES
+-- ------------------------------------------
+
+-- Cleanup outdated generic policies[cite: 90, 91].
+DROP POLICY IF EXISTS "Allow chat read" ON public.chat_rooms;
+DROP POLICY IF EXISTS "Allow chat members read" ON public.chat_room_members;
+DROP POLICY IF EXISTS "Allow members to inspect peer manifest lists" ON public.chat_room_members;
+
+-- Chat Rooms
+CREATE POLICY "Allow members to view their specific chat rooms"
+    ON public.chat_rooms FOR SELECT 
+    USING (EXISTS (SELECT 1 FROM public.chat_room_members WHERE room_id = id AND user_id = auth.uid()));
+
+CREATE POLICY "Allow post owners and admins to alter room states"
+    ON public.chat_rooms FOR UPDATE
+    USING (created_by = auth.uid() OR (SELECT role FROM public.profiles WHERE id = auth.uid()) = 'admin');
+
+CREATE POLICY "Allow post owners and admins to terminate rooms"
+    ON public.chat_rooms FOR DELETE
+    USING (created_by = auth.uid() OR (SELECT role FROM public.profiles WHERE id = auth.uid()) = 'admin');
+
+-- Chat Room Members 
+CREATE POLICY "Allow members to see other room participants"
+    ON public.chat_room_members FOR SELECT
+    USING (EXISTS (SELECT 1 FROM public.chat_room_members AS crm WHERE crm.room_id = public.chat_room_members.room_id AND crm.user_id = auth.uid()));
+
+-- Messages
+CREATE POLICY "Allow chat members to read encrypted stream"
+    ON public.chat_messages FOR SELECT
+    USING (EXISTS (SELECT 1 FROM public.chat_room_members WHERE room_id = public.chat_messages.room_id AND user_id = auth.uid()));
+
+CREATE POLICY "Allow active members to broadcast messages"
+    ON public.chat_messages FOR INSERT
+    WITH CHECK (EXISTS (
+        SELECT 1 FROM public.chat_room_members crm 
+        JOIN public.chat_rooms cr ON crm.room_id = cr.id 
+        WHERE crm.room_id = chat_messages.room_id AND crm.user_id = auth.uid() AND cr.status = 'open'
+    ));
+
+COMMIT;
