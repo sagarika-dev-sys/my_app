@@ -14,9 +14,14 @@ export default function LoginPage() {
   const handleStudentLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    // Validate domain before making network call
-    if (!email.toLowerCase().endsWith("@nitrr.ac.in")) {
-      alert("Access Denied: Only official NITRR emails (@nitrr.ac.in) are authorized.");
+    // Clean input data format
+    const targetEmail = email.trim().toLowerCase();
+    
+    // ✅ FIXED: Regex pattern allows core domain as well as department subdomains (like cse.nitrr.ac.in)
+    const nitrrDomainRegex = /@[a-zA-Z0-9.-]*nitrr\.ac\.in$/;
+    
+    if (!nitrrDomainRegex.test(targetEmail)) {
+      alert("Access Denied: Only official NITRR domain emails are authorized.");
       return;
     }
 
@@ -25,7 +30,7 @@ export default function LoginPage() {
       const response = await fetch(`${API_BASE_URL}/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email.toLowerCase(), password }),
+        body: JSON.stringify({ email: targetEmail, password }),
       });
 
       const data = await response.json();

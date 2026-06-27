@@ -8,10 +8,17 @@ import { supabase } from "@/lib/supabase";
 
 // Helper to map hashtag strings to your database room IDs
 // Note: Ensure these room IDs match the IDs in your chat_rooms table
-const getRoomId = (text: string) => {
-  if (text.toLowerCase().includes("#ordersplit")) return "room-ordersplit";
-  if (text.toLowerCase().includes("#cabsplit")) return "room-cabsplit";
-  if (text.toLowerCase().includes("#resell")) return "room-resell";
+const getRoomId = (post: any) => {
+  // A. Check for hashtags
+  const content = post.content.toLowerCase();
+  if (content.includes("#ordersplit")) return "room-ordersplit";
+  if (content.includes("#cabsplit")) return "room-cabsplit";
+  if (content.includes("#resell")) return "room-resell";
+
+  // B. Check for Club-specific chat rooms
+  // If your database 'posts' table has a 'club_id' column, use it!
+  if (post.club_id) return `room-club-${post.club_id}`;
+
   return null;
 };
 
@@ -91,23 +98,19 @@ export default function CampusFeed() {
       <div className="space-y-4">
         {posts.length > 0 ? (
           posts.map((post: any) => {
-            const roomId = getRoomId(post.content);
+            const roomId = getRoomId(post);
+            if (!roomId) return null;
+
+            const label = roomId.startsWith('room-club-') ? "Visit Club Chat" : `Join ${roomId.replace('room-', '#')} Discussion`;
+
             return (
-              <Card key={post.id} className="bg-white/70 rounded-2xl shadow-sm border border-slate-100">
-                <CardContent className="p-5">
-                  <p className="text-sm text-slate-700 leading-relaxed mb-4">{post.content}</p>
-                  
-                  {roomId && (
-                    <Button 
-                      variant="outline"
-                      onClick={() => window.location.href = `/chat/${roomId}`}
-                      className="w-full text-indigo-700 border-indigo-200 hover:bg-indigo-50 text-[10px] font-bold py-1.5 rounded-lg"
-                    >
-                      Join {roomId.replace('room-', '#')} Discussion
-                    </Button>
-                  )}
-                </CardContent>
-              </Card>
+              <Button 
+                variant="outline"
+                onClick={() => window.location.href = `/chat/${roomId}`}
+                className="w-full text-indigo-700 border-indigo-200 hover:bg-indigo-50 text-[10px] font-bold py-1.5 rounded-lg"
+              >
+                {label}
+              </Button>
             );
           })
         ) : (

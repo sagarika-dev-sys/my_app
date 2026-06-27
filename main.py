@@ -1,3 +1,4 @@
+import re
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -70,6 +71,19 @@ def login_student(payload: LoginPayload):
     print(f"Email attempted: {payload.email}")
     print("="*40 + "\n")
     
+    # Clean and lowercase the email input string safely
+    email_clean = payload.email.strip().lower()
+    
+    # SMART VALIDATION REGEX:
+    # Matches standard domain '@nitrr.ac.in' AND subdomains like '@cse.nitrr.ac.in'
+    nitrr_pattern = r"@[a-zA-Z0-9.\-_]*nitrr\.ac\.in$"
+    
+    if not re.search(nitrr_pattern, email_clean):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Access Denied: Only official NITRR branch emails are authorized."
+        )
+        
     if len(payload.password) >= 4:
         return {
             "access_token": "mock-secure-session-token-abc123xyz",
@@ -85,7 +99,6 @@ def login_student(payload: LoginPayload):
 # --- CAMPUS FEED ENDPOINTS ---
 @app.get("/feeds")
 def get_feeds():
-    # FIXED: Table target mapped to public.posts and order parameter switched to desc=True
     response = supabase.table("posts").select("*").order("created_at", desc=True).execute()
     return response.data
 
@@ -96,7 +109,6 @@ def receive_feed_post(payload: FeedPayload):
     print(f"Content: {payload.content}")
     print("="*40 + "\n")
     
-    # FIXED: Columns match public.posts schema keys accurately
     new_post = {
         "student_id": payload.student_id,
         "content": payload.content,
@@ -119,14 +131,13 @@ def receive_complaint(payload: ComplaintPayload):
     print(f"Subject: {payload.subject}")
     print("="*40 + "\n")
     
-    # FIXED: student_id handling respects schema types
     new_entry = {
         "student_id": None if payload.is_anonymous else payload.student_id,
         "subject": payload.subject,
         "category": payload.category,
         "description": payload.description,
         "is_anonymous": payload.is_anonymous,
-        "status": "open"  # Default status from database ENUM matching
+        "status": "open"  # Default state from database ENUM
     }
     response = supabase.table("complaints").insert(new_entry).execute()
     return {"status": "success", "data": response.data}
@@ -145,7 +156,6 @@ def create_campus_event(payload: CreateEventPayload):
     print(f"Title: {payload.title} | Venue: {payload.venue}")
     print("="*40 + "\n")
     
-    # FIXED: Replaced mock tracking strings with valid schema fields
     new_event = {
         "club_id": payload.club_id,
         "title": payload.title,
@@ -162,7 +172,6 @@ def create_campus_event(payload: CreateEventPayload):
 # --- CLUB CHAT LOUNGE ENDPOINTS ---
 @app.get("/chat/{room_id}")
 def get_chat_messages(room_id: str):
-    # FIXED: Filter matching corrected column name 'room_id'
     response = supabase.table("chat_messages").select("*").eq("room_id", room_id).order("created_at", desc=False).execute()
     return response.data
 
@@ -170,7 +179,6 @@ def get_chat_messages(room_id: str):
 def post_chat_message(room_id: str, payload: ChatMessagePayload):
     print(f"💬 [Room ID: #{room_id}] New Cloud Text: {payload.content}")
     
-    # FIXED: Re-mapped to support schema structural requirements
     new_message = {
         "room_id": room_id,
         "sender_id": payload.sender_id,
