@@ -102,7 +102,7 @@ class StudentRegister(BaseModel):
     @classmethod
     def validate_email(cls, value):
 
-        if not value.lower().endswith("@nitrr.ac.in"):
+        if not value.lower().endswith("nitrr.ac.in"):
             raise ValueError("Invalid institute email")
 
         return value
