@@ -1,107 +1,120 @@
 "use client";
 
 import React, { useState, useEffect } from 'react';
-import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Textarea } from "@/components/ui/textarea";
-import { API_BASE_URL } from "@/lib/config"; // Imports your live config file cleanly
+import { supabase } from "@/lib/supabase";
+
+// Helper to map hashtag strings to your database room IDs
+// Note: Ensure these room IDs match the IDs in your chat_rooms table
+const getRoomId = (text: string) => {
+  if (text.toLowerCase().includes("#ordersplit")) return "room-ordersplit";
+  if (text.toLowerCase().includes("#cabsplit")) return "room-cabsplit";
+  if (text.toLowerCase().includes("#resell")) return "room-resell";
+  return null;
+};
 
 export default function CampusFeed() {
   const [posts, setPosts] = useState<any[]>([]);
   const [content, setContent] = useState('');
   const [loading, setLoading] = useState(false);
+  const [user, setUser] = useState<any>(null);
 
-  const fetchFeeds = async () => {
-    try {
-      const response = await fetch(`${API_BASE_URL}/feeds`);
-      if (response.ok) {
-        const data = await response.json();
-        setPosts(data);
-      }
-    } catch (error) {
-      console.error("Feed link failure:", error);
-    }
+  const fetchData = async () => {
+    // 1. Get Auth session
+    const { data: { session } } = await supabase.auth.getSession();
+    setUser(session?.user || null);
+
+    // 2. Fetch Posts using Supabase
+    const { data, error } = await supabase
+      .from('posts')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (!error) setPosts(data || []);
   };
 
   useEffect(() => {
-    fetchFeeds();
+    fetchData();
   }, []);
 
   const handleCreatePost = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!content.trim()) return;
+    if (!content.trim() || !user) return;
 
     setLoading(true);
-    const activeStudentId = "018b31a8-9d21-729d-9c44-b0a1a5b82201";
+    const { error } = await supabase
+      .from('posts')
+      .insert([{ student_id: user.id, content: content }]);
 
-    const feedPayload = {
-      student_id: activeStudentId,
-      content: content,
-      media_url: null
-    };
-
-    try {
-      const response = await fetch(`${API_BASE_URL}/feeds`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(feedPayload)
-      });
-
-      if (response.ok) {
-        setContent('');
-        fetchFeeds();
-      }
-    } catch (error) {
-      console.error("Post transmission error:", error);
-    } finally {
-      setLoading(false);
+    if (!error) {
+      setContent('');
+      fetchData();
     }
+    setLoading(false);
   };
 
   return (
-    <div className="min-h-screen p-6 md:p-10 bg-transparent relative">
-      <div className="max-w-2xl mx-auto space-y-6">
-        <div className="flex justify-between items-center border-b border-slate-200/60 pb-4">
-          <div>
-            <h1 className="text-3xl font-extrabold text-slate-900 tracking-tight">Campus Feed</h1>
-            <p className="text-sm text-slate-500">Live system sync across student updates.</p>
-          </div>
-          <Badge className="bg-slate-900 text-white px-3 py-1 text-xs">Live Stream</Badge>
-        </div>
-
-        <Card className="bg-white/70 backdrop-blur-md border border-white/40 rounded-2xl shadow-md">
-          <CardHeader className="pb-3"><CardTitle className="text-lg font-bold text-slate-800">Broadcast an Update</CardTitle></CardHeader>
+    <div className="max-w-2xl mx-auto p-4 space-y-6">
+      
+      {/* 1. Conditional Publish Form */}
+      {user ? (
+        <Card className="bg-white/90 rounded-2xl shadow-sm border border-slate-100">
+          <CardHeader>
+            <CardTitle className="text-lg">Publish Update</CardTitle>
+          </CardHeader>
           <CardContent>
             <form onSubmit={handleCreatePost} className="space-y-4">
               <Textarea 
-                placeholder="Share your milestones..." 
+                placeholder="Use #ordersplit, #cabsplit, or #resell to auto-create a discussion room." 
                 value={content} 
-                onChange={(e) => setContent(e.target.value)} // FIXED TYPO: changed from content to e
-                className="bg-white/80 border-slate-200 text-slate-900 rounded-xl min-h-[90px]" 
+                onChange={(e) => setContent(e.target.value)}
+                className="bg-white border-slate-200 rounded-xl min-h-[90px]" 
                 required 
               />
               <div className="flex justify-end">
-                <Button type="submit" disabled={loading} className="bg-slate-900 hover:bg-slate-800 text-white font-bold text-xs px-5 py-2.5 rounded-xl cursor-pointer">
+                <Button type="submit" disabled={loading} className="bg-slate-900 text-white text-xs px-5 py-2.5 rounded-xl">
                   {loading ? "Publishing..." : "Publish Post"}
                 </Button>
               </div>
             </form>
           </CardContent>
         </Card>
-
-        <div className="space-y-4">
-          {posts.map((post: any, index) => (
-            <Card key={post.id || index} className="bg-white/70 backdrop-blur-md border border-white/40 rounded-2xl shadow-sm">
-              <CardHeader className="p-5 pb-2">
-                <CardTitle className="text-sm font-bold text-slate-900">Student Entry ({post.roll_number || "Verified Asset"})</CardTitle>
-              </CardHeader>
-              <CardContent className="px-5 pb-4">
-                <p className="text-sm text-slate-700 leading-relaxed">{post.content}</p>
-              </CardContent>
-            </Card>
-          ))}
+      ) : (
+        <div className="text-center p-6 border border-dashed rounded-2xl text-slate-400 text-sm">
+          Please log in to share updates and join discussions.
         </div>
+      )}
+
+      {/* 2. Feed Rendering with Empty State */}
+      <div className="space-y-4">
+        {posts.length > 0 ? (
+          posts.map((post: any) => {
+            const roomId = getRoomId(post.content);
+            return (
+              <Card key={post.id} className="bg-white/70 rounded-2xl shadow-sm border border-slate-100">
+                <CardContent className="p-5">
+                  <p className="text-sm text-slate-700 leading-relaxed mb-4">{post.content}</p>
+                  
+                  {roomId && (
+                    <Button 
+                      variant="outline"
+                      onClick={() => window.location.href = `/chat/${roomId}`}
+                      className="w-full text-indigo-700 border-indigo-200 hover:bg-indigo-50 text-[10px] font-bold py-1.5 rounded-lg"
+                    >
+                      Join {roomId.replace('room-', '#')} Discussion
+                    </Button>
+                  )}
+                </CardContent>
+              </Card>
+            );
+          })
+        ) : (
+          <div className="text-center py-10 text-slate-400">
+            No posts found. Be the first to share something!
+          </div>
+        )}
       </div>
     </div>
   );

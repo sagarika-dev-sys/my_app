@@ -1,8 +1,9 @@
 from fastapi import FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional
-from datetime import datetime
+from uuid import UUID
+from supabase import create_client, Client
 
 app = FastAPI()
 
@@ -15,89 +16,50 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# --- SCHEMAS ---
+# --- SUPABASE CONFIGURATION ---
+SUPABASE_URL = "https://jjndjcolzqsfxxkkczvz.supabase.co"
+SUPABASE_KEY = "sb_publishable_Ny2C2NmuOnn4UUoQhvfKwg_KUgJNKU3" 
 
-# Structure for Member 2's Sign In Portal
+# Start the cloud database client safely
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
+
+# --- VALIDATION SCHEMAS (PYDANTIC) ---
+
 class LoginPayload(BaseModel):
     email: str
     password: str
 
-# Structure for Member 2's Campus Feed
 class FeedPayload(BaseModel):
     student_id: str
     content: str
     media_url: Optional[str] = None
 
-# Structure for Member 2's Grievance Deck
 class ComplaintPayload(BaseModel):
-    student_id: str
+    student_id: Optional[str] = None  # Optional to allow for anonymous options
     category: str
     subject: str
     description: str
     is_anonymous: bool
 
-# Structure for Member 4's Interactive Event Publishing Modal Form
 class CreateEventPayload(BaseModel):
+    club_id: str  # Added to tie dynamically to the acting coordinator body
     title: str
     description: str
     venue: str
     start_time: str
     end_time: str
-    capacity: int
+    capacity: int = Field(..., gt=0)  # Enforces constraint: check_positive_capacity
 
-# Structure for Member 4's High-Speed Chat System
 class ChatMessagePayload(BaseModel):
+    sender_id: str
     content: str
-
-
-# --- LOCAL MEMORY STORAGE ---
-db_complaints = []
-db_feeds = [
-    {
-        "id": 1,
-        "roll_number": "NITR-2026-CORE",
-        "content": "Welcome to the CampusBuzz live feed! Local engine optimization layer active."
-    }
-]
-
-# Seeding original mock events data to cleanly support the front-end layout state rules
-db_events = [
-    {
-        "id": "evt-101",
-        "title": "HackFest 2026 Briefing Session",
-        "description": "Mandatory structural orientation and team sync-up rules for all registered internal campus hackathon participants.",
-        "venue": "Main Audi Hall 2",
-        "start_time": "2026-06-28T16:30:00.000Z",
-        "end_time": "2026-06-28T18:30:00.000Z",
-        "capacity": 120,
-        "club_id": "club-turing",
-        "profiles": {"full_name": "Computer Science Society"}
-    },
-    {
-        "id": "evt-102",
-        "title": "Crystallography & Physics Lab Seminar",
-        "description": "An introductory presentation analyzing Miller indices structural alignments and applications of Bragg's Law.",
-        "venue": "Solid State Physics Block",
-        "start_time": "2026-06-26T11:00:00.000Z",
-        "end_time": "2026-06-26T13:00:00.000Z",
-        "capacity": 60,
-        "club_id": "club-physics",
-        "profiles": {"full_name": "Physics Core Research Wing"}
-    }
-]
-
-db_chat_messages = [
-    {
-        "club_id": "programming-club",
-        "content": "Welcome to the official Programming Club chat lounge! Local engine stream layer active."
-    }
-]
 
 
 # --- BASE ROUTE ---
 @app.get("/")
 def read_root():
-    return {"status": "connected", "engine": "local full-stack architecture active"}
+    return {"status": "connected", "engine": "Supabase Cloud Integration Active"}
 
 
 # --- AUTHENTICATION ENDPOINT ---
@@ -108,7 +70,7 @@ def login_student(payload: LoginPayload):
     print(f"Email attempted: {payload.email}")
     print("="*40 + "\n")
     
-    if payload.password == "password" or payload.password == "12345678" or len(payload.password) >= 4:
+    if len(payload.password) >= 4:
         return {
             "access_token": "mock-secure-session-token-abc123xyz",
             "token_type": "bearer"
@@ -123,111 +85,103 @@ def login_student(payload: LoginPayload):
 # --- CAMPUS FEED ENDPOINTS ---
 @app.get("/feeds")
 def get_feeds():
-    return db_feeds
+    # FIXED: Table target mapped to public.posts and order parameter switched to desc=True
+    response = supabase.table("posts").select("*").order("created_at", desc=True).execute()
+    return response.data
 
 @app.post("/feeds")
 def receive_feed_post(payload: FeedPayload):
     print("\n" + "="*40)
-    print("🔥 LOCAL ENGINE STREAMED A NEW FEED BROADCAST!")
+    print("🔥 CLOUD ENGINE: STREAMING NEW FEED BROADCAST")
     print(f"Content: {payload.content}")
     print("="*40 + "\n")
     
+    # FIXED: Columns match public.posts schema keys accurately
     new_post = {
-        "id": len(db_feeds) + 1,
-        "roll_number": "Local Session",
-        "content": payload.content
+        "student_id": payload.student_id,
+        "content": payload.content,
+        "media_url": payload.media_url
     }
-    db_feeds.insert(0, new_post)
-    return {"status": "success", "message": "Feed broadcast synced smoothly"}
+    response = supabase.table("posts").insert(new_post).execute()
+    return {"status": "success", "data": response.data}
 
 
 # --- GRIEVANCE DECK ENDPOINTS ---
 @app.get("/complaints")
 def get_complaints():
-    return db_complaints
+    response = supabase.table("complaints").select("*").order("created_at", desc=True).execute()
+    return response.data
 
 @app.post("/complaints")
 def receive_complaint(payload: ComplaintPayload):
     print("\n" + "="*40)
-    print("🚀 LOCAL ENGINE RECEIVED A NEW GRIEVANCE!")
+    print("🚀 CLOUD ENGINE: PROCESSING NEW GRIEVANCE")
     print(f"Subject: {payload.subject}")
     print("="*40 + "\n")
     
+    # FIXED: student_id handling respects schema types
     new_entry = {
-        "id": len(db_complaints) + 1,
+        "student_id": None if payload.is_anonymous else payload.student_id,
         "subject": payload.subject,
         "category": payload.category,
         "description": payload.description,
         "is_anonymous": payload.is_anonymous,
-        "status": "locally verified"
+        "status": "open"  # Default status from database ENUM matching
     }
-    db_complaints.append(new_entry)
-    return {"status": "success", "message": "Grievance logged securely"}
+    response = supabase.table("complaints").insert(new_entry).execute()
+    return {"status": "success", "data": response.data}
 
 
-# --- CAMPUS EVENTS SYSTEM V2 ---
+# --- CAMPUS EVENTS SYSTEM ---
 @app.get("/events")
 def get_campus_events():
-    return db_events
+    response = supabase.table("events").select("*").order("start_time", desc=False).execute()
+    return response.data
 
 @app.post("/events")
 def create_campus_event(payload: CreateEventPayload):
     print("\n" + "="*40)
-    print("📅 PUBLISHING ENGINE ACTIVE: NEW EVENT LOGGED")
+    print("📅 PUBLISHING ENGINE: COUPLING NEW EVENT TO CLOUD")
     print(f"Title: {payload.title} | Venue: {payload.venue}")
     print("="*40 + "\n")
     
-    new_id = f"evt-{len(db_events) + 101}"
+    # FIXED: Replaced mock tracking strings with valid schema fields
     new_event = {
-        "id": new_id,
+        "club_id": payload.club_id,
         "title": payload.title,
         "description": payload.description,
         "venue": payload.venue,
         "start_time": payload.start_time,
         "end_time": payload.end_time,
-        "capacity": payload.capacity,
-        "club_id": "club-turing",
-        "profiles": {"full_name": "Turing Club (Sandbox Local)"}
+        "capacity": payload.capacity
     }
-    db_events.append(new_event)
-    return {"status": "success", "event_id": new_id}
+    response = supabase.table("events").insert(new_event).execute()
+    return {"status": "success", "data": response.data}
 
 
 # --- CLUB CHAT LOUNGE ENDPOINTS ---
 @app.get("/chat/{room_id}")
 def get_chat_messages(room_id: str):
-    room_messages = [msg for msg in db_chat_messages if msg["club_id"] == room_id]
-    return room_messages
+    # FIXED: Filter matching corrected column name 'room_id'
+    response = supabase.table("chat_messages").select("*").eq("room_id", room_id).order("created_at", desc=False).execute()
+    return response.data
 
 @app.post("/chat/{room_id}")
 def post_chat_message(room_id: str, payload: ChatMessagePayload):
-    print(f"💬 [Room ID: #{room_id}] New distributed trace text: {payload.content}")
+    print(f"💬 [Room ID: #{room_id}] New Cloud Text: {payload.content}")
+    
+    # FIXED: Re-mapped to support schema structural requirements
     new_message = {
-        "club_id": room_id,
-        "content": payload.content
+        "room_id": room_id,
+        "sender_id": payload.sender_id,
+        "message": payload.content
     }
-    db_chat_messages.append(new_message)
-    return {"status": "success", "message": "Message appended and broad-cast synced successfully"}
+    response = supabase.table("chat_messages").insert(new_message).execute()
+    return {"status": "success", "data": response.data}
+
+
 # --- CAMPUS CLUBS INFORMATION ENDPOINTS ---
-
-# Mock profiles table matching Member 4's structural canvas parameters
-db_clubs = [
-    {
-        "id": "club-turing",
-        "full_name": "Computer Science Society",
-        "role": "club",
-        "category": "Technical",
-        "tagline": "Building core developmental pipelines and tracking algorithmic events."
-    },
-    {
-        "id": "club-physics",
-        "full_name": "Physics & Core Research Wing",
-        "role": "club",
-        "category": "Research",
-        "tagline": "The epicenter of structural crystallography, solid-state models, and campus research."
-    }
-]
-
 @app.get("/clubs")
 def get_campus_clubs():
-    return db_clubs
+    response = supabase.table("clubs").select("*").execute()
+    return response.data
