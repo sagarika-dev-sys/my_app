@@ -6,7 +6,9 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
-import { API_BASE_URL } from "@/lib/config"; // Imports your live config file cleanly
+
+// Fallback directly to localhost if env isn't registering yet
+const BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://127.0.0.1:8000";
 
 export default function ComplaintsPortal() {
   const [complaints, setComplaints] = useState<any[]>([]);
@@ -17,7 +19,8 @@ export default function ComplaintsPortal() {
 
   const fetchComplaints = async () => {
     try {
-      const response = await fetch(`${API_BASE_URL}/complaints`);
+      // Updated to use the secure BASE_URL variable
+      const response = await fetch(`${BASE_URL}/complaints`);
       if (response.ok) {
         const data = await response.json();
         setComplaints(data);
@@ -46,7 +49,8 @@ export default function ComplaintsPortal() {
     };
 
     try {
-      const response = await fetch(`${API_BASE_URL}/complaints`, {
+      // Updated to use the secure BASE_URL variable
+      const response = await fetch(`${BASE_URL}/complaints`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(complaintPayload),
@@ -107,7 +111,7 @@ export default function ComplaintsPortal() {
         <div className="lg:col-span-2 space-y-4">
           <h2 className="text-lg font-bold text-slate-900">Live Tracking Log</h2>
           <div className="space-y-3">
-            {complaints.map((item: any, index) => (
+            {complaints && complaints.map((item: any, index) => (
               <Card key={item.id || index} className="bg-white/70 backdrop-blur-md border border-white/40 rounded-xl shadow-sm">
                 <CardHeader className="p-4 pb-2 flex flex-row items-center justify-between">
                   <Badge className="text-xs bg-emerald-100 text-emerald-800 border-emerald-200">{item.status || "open"}</Badge>

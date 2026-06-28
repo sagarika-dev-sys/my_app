@@ -11,15 +11,15 @@ app = FastAPI()
 # Enable CORS so Next.js can talk to FastAPI safely
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# --- SUPABASE CONFIGURATION ---
+# --- SUPABASE CONFIGURATION (ROTATED KEYS UPDATED) ---
 SUPABASE_URL = "https://jjndjcolzqsfxxkkczvz.supabase.co"
-SUPABASE_KEY = "sb_publishable_Ny2C2NmuOnn4UUoQhvfKwg_KUgJNKU3" 
+SUPABASE_KEY = "sb_publishable_czKmjVmnhJRigC6OGRWAgQ_ZrRSE-Xp" 
 
 # Start the cloud database client safely
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
